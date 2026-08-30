@@ -1,0 +1,9 @@
+# resource.cfg.example
+#
+# Copia este archivo como "resource.cfg" (sin ".example") en la misma
+# carpeta, y rellena $USER10$ con la contraseña REAL del rol
+# retail_readonly. El archivo "resource.cfg" real NUNCA se sube a
+# GitHub (ya está en .gitignore) - por eso Nagios separa esto en un
+# archivo aparte en vez de escribirlo directo en services.cfg.
+
+$USER10$=cambia_esta_contrasena
