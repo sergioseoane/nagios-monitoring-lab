@@ -1,67 +1,120 @@
 # nagios-monitoring-lab
 
-Laboratorio de monitorización con Nagios Core, vigilando un servidor
-Linux y la base de datos del proyecto [`postgres-retail-admin`](../postgres-retail-admin)
-— conectando ambos proyectos entre sí, en vez de dejarlos sueltos.
+Laboratorio de monitorización de infraestructura con **Nagios Core**,
+integrado con una base de datos PostgreSQL real y desplegado en
+contenedores, replicando el diseño de un sistema de monitorización
+de producción a pequeña escala.
 
-## Qué vigila
+## Objetivo del laboratorio
 
-| Servicio | Qué comprueba | Umbrales |
-|---|---|---|
-| Espacio en disco raíz | `/` | Warning 20%, Critical 10% libre |
-| Espacio en disco de backups | `/home` | Warning 30%, Critical 15% libre (más exigente, para detectar antes de que fallen los backups) |
-| Carga de CPU | Media de carga (1/5/15 min) | Pensado para una instancia pequeña (1-2 vCPU) |
-| PostgreSQL - retail_demo | Conexión real a la base de datos del otro proyecto | Usa el rol `retail_readonly` (menor privilegio, no el superusuario) |
+Diseñar e implementar un sistema de monitorización funcional que
+cubra tres niveles habituales en un entorno real:
 
+1. **Infraestructura** — estado del propio servidor (disco, carga).
+2. **Aplicación** — disponibilidad de un servicio dependiente
+(conexión a la base de datos de negocio).
+3. **Operación** — gestión activa de incidencias (reconocimiento,
+ventanas de mantenimiento), no solo detección pasiva de fallos.
 
-## Cómo probarlo
+El objetivo no era levantar Nagios "por levantarlo", sino integrarlo
+con una infraestructura real ya existente ([`postgres-retail-admin`](../postgres-retail-admin))
+y con el propio flujo de despliegue del portfolio
+([`portfolio-infra`](../portfolio-infra)), tal como se integraría una
+herramienta de monitorización en un entorno de trabajo real.
 
-### A) Uso real: dentro de Docker Compose (portfolio-infra)
+## Arquitectura
 
-Este proyecto se monta como parte de
-[`portfolio-infra`](../portfolio-infra), que ya incluye el servicio
-`nagios` apuntando a `config/` de aquí. Desde `portfolio-infra`:
+```
+┌─────────────────────────┐        ┌──────────────────────────┐
+│   servidor-portfolio     │        │   postgres (contenedor)   │
+│   (host monitorizado)     │        │                           │
+│                          │        │  retail\_readonly (rol de  │
+│  - Espacio en disco       │───────▶│  solo lectura, sin        │
+│  - Carga de CPU           │  check │  privilegios de escritura)│
+│                          │        │                           │
+└─────────────────────────┘        └──────────────────────────┘
+            ▲
+            │ vigilado por
+            │
+   ┌─────────────────┐
+   │   Nagios Core     │
+   │   (contenedor)     │
+   │                    │
+   │ hosts / services /  │
+   │ commands / contacts  │
+   └─────────────────┘
+```
+
+Tanto Nagios como PostgreSQL viven en una red interna de Docker
+(`backend-net`) sin ningún puerto publicado hacia internet — la única
+forma de acceder al panel es mediante un túnel SSH, nunca de forma
+pública, siguiendo el mismo criterio de seguridad aplicado al resto
+del portfolio.
+
+## Competencias técnicas aplicadas
+
+* **Administración de sistemas y contenedores**: orquestación con
+Docker Compose y segmentación de red interna (`edge-net` /
+`backend-net`) para aislar los servicios de gestión del tráfico
+público.
+* **Configuración de Nagios Core**: hosts, servicios, comandos,
+plantillas y contactos, con umbrales de alerta ajustados por tipo
+de recurso.
+* **Monitorización de bases de datos con mínimo privilegio**:
+comprobación de disponibilidad de PostgreSQL mediante un rol de
+solo lectura dedicado, no el superusuario.
+* **Gestión de secretos**: credenciales fuera del código, mediante
+variables de entorno y archivos de macros no versionados.
+* **Automatización de operaciones (ITOps/NOC)**: scripts que
+reconocen incidencias y programan ventanas de mantenimiento a
+través del motor de comandos externos de Nagios.
+
+## Estructura del repositorio
+
+```
+config/             → hosts, servicios, comandos y contactos de Nagios
+config-overrides/   → anulación de la configuración de ejemplo de la imagen base
+scripts/            → automatización operativa (Acknowledge, Scheduled Downtime)
+resource.cfg.example → plantilla de credenciales (sin datos reales)
+```
+
+## Cómo ejecutarlo
+
+Este proyecto no se ejecuta de forma aislada — se integra dentro de
+[`portfolio-infra`](../portfolio-infra), que orquesta Nagios junto al
+resto de la infraestructura:
 
 ```bash
-docker compose up -d
-docker compose exec nagios /opt/nagios/libexec/check_pgsql \
-  -H postgres -d retail_demo -l retail_readonly -p TU_CONTRASENA
+cp resource.cfg.example resource.cfg
+# Rellenar $USER10$ con la misma contraseña que RETAIL\_READONLY\_PASSWORD
+# del .env de portfolio-infra
+
+cd ../portfolio-infra
+docker compose up -d nagios
 ```
 
-### B) Prueba rápida y aislada (instalación nativa, para validar solo sintaxis)
+Validación de la configuración, previa a cualquier despliegue:
 
 ```bash
-sudo apt install nagios4 monitoring-plugins-basic monitoring-plugins-contrib
-sudo cp config/*.cfg /etc/nagios4/conf.d/
-sudo nagios4 -v /etc/nagios4/nagios.cfg
-sudo systemctl restart nagios4
+docker compose exec nagios /opt/nagios/bin/nagios -v /opt/nagios/etc/nagios.cfg
 ```
 
-La interfaz web queda en `http://localhost/nagios4` (usuario/contraseña
-configurados con `htpasswd` durante la instalación). Útil para probar
-cambios de sintaxis rápido, sin depender de Docker.
+Automatización de incidencias, en la práctica
+# Reconocer una incidencia activa (evita notificaciones repetidas
+# mientras ya se está investigando):
+docker compose exec nagios /opt/nagios/scripts-custom/acknowledge\_problem.sh \\
+  servidor-portfolio "Carga de CPU" "En investigación"
 
-## Estructura
-
-```
-config/
-├── hosts.cfg      # el servidor a vigilar
-├── services.cfg   # los 4 checks (cada uno con su contact_groups)
-├── commands.cfg   # comando personalizado para el check de Postgres
-└── contacts.cfg   # quién recibe las notificaciones
-```
+# Programar una ventana de mantenimiento antes de una intervención
+# planificada (silencia alertas durante el tiempo indicado):
+docker compose exec nagios /opt/nagios/scripts-custom/schedule\_downtime.sh \\
+  servidor-portfolio "PostgreSQL - retail\_demo" 10 "Mantenimiento planificado"
 
 
-## Mejoras de nivel "producción" en `docker-compose.yml` (portfolio-infra)
+## Proyectos relacionados
 
-- **Volumen `nagios-data`**: el historial de estados y logs de Nagios
-  sobrevive a un `docker compose down` normal (sin `-v`), en vez de
-  perderse cada vez que se recrea el contenedor.
-- **Credenciales del panel web por variable de entorno**: nunca se
-  dejan las de fábrica de la imagen (`nagiosadmin`/`nagios`).
-- **`mem_limit`**: límite de memoria explícito, coherente con el
-  presupuesto calculado para una instancia de 1GB.
-- **`depends_on` con `condition: service_healthy`**: Nagios no arranca
-  hasta que Postgres confirma (via `healthcheck`) que ya acepta
-  conexiones, evitando una ventana de checks fallidos nada más
-  arrancar todo junto.
+* [`postgres-retail-admin`](../postgres-retail-admin) — la base de
+datos monitorizada por este laboratorio.
+* [`portfolio-infra`](../portfolio-infra) — la infraestructura
+completa donde se despliega, incluida la segmentación de red.
+
