@@ -28,7 +28,7 @@ herramienta de monitorización en un entorno de trabajo real.
 ┌─────────────────────────┐        ┌──────────────────────────┐
 │   servidor-portfolio     │        │   postgres (contenedor)   │
 │   (host monitorizado)     │        │                           │
-│                          │        │  retail\_readonly (rol de  │
+│                          │        │  retail_readonly (rol de  │
 │  - Espacio en disco       │───────▶│  solo lectura, sin        │
 │  - Carga de CPU           │  check │  privilegios de escritura)│
 │                          │        │                           │
@@ -47,7 +47,9 @@ herramienta de monitorización en un entorno de trabajo real.
 
 Tanto Nagios como PostgreSQL viven en una red interna de Docker
 (`backend-net`) sin ningún puerto publicado hacia internet — la única
-forma de acceder al panel es mediante un túnel SSH, nunca de forma
+forma de acceder al panel es mediante AWS Systems Manager Session
+Manager (sin necesidad de abrir ningún puerto de entrada, ni
+siquiera SSH), nunca de forma
 pública, siguiendo el mismo criterio de seguridad aplicado al resto
 del portfolio.
 
@@ -86,7 +88,7 @@ resto de la infraestructura:
 
 ```bash
 cp resource.cfg.example resource.cfg
-# Rellenar $USER10$ con la misma contraseña que RETAIL\_READONLY\_PASSWORD
+# Rellenar $USER10$ con la misma contraseña que RETAIL_READONLY_PASSWORD
 # del .env de portfolio-infra
 
 cd ../portfolio-infra
@@ -99,16 +101,19 @@ Validación de la configuración, previa a cualquier despliegue:
 docker compose exec nagios /opt/nagios/bin/nagios -v /opt/nagios/etc/nagios.cfg
 ```
 
-Automatización de incidencias, en la práctica
+## Automatización de incidencias, en la práctica
+
+```bash
 # Reconocer una incidencia activa (evita notificaciones repetidas
 # mientras ya se está investigando):
-docker compose exec nagios /opt/nagios/scripts-custom/acknowledge\_problem.sh \\
+docker compose exec nagios /opt/nagios/scripts-custom/acknowledge_problem.sh \
   servidor-portfolio "Carga de CPU" "En investigación"
 
 # Programar una ventana de mantenimiento antes de una intervención
 # planificada (silencia alertas durante el tiempo indicado):
-docker compose exec nagios /opt/nagios/scripts-custom/schedule\_downtime.sh \\
-  servidor-portfolio "PostgreSQL - retail\_demo" 10 "Mantenimiento planificado"
+docker compose exec nagios /opt/nagios/scripts-custom/schedule_downtime.sh \
+  servidor-portfolio "PostgreSQL - retail_demo" 10 "Mantenimiento planificado"
+```
 
 
 ## Proyectos relacionados
